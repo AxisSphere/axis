@@ -2,16 +2,15 @@ import fs from "fs/promises";
 import path from "path";
 import yaml from "js-yaml";
 import { log } from "../utils/logger";
-import { createLabelEntity, LabelPolicy, Policy } from "../engine/types/labels";
+import { Policy, LabelPolicy, createLabelEntity, LabelEntity } from "../engine/types/labels";
 
-const DEFAULT_POLICIES_DIR = path.resolve(__dirname, "../../default-policies");
+const DEFAULT_POLICIES_DIR = path.resolve(__dirname, "../default-policies");
 
 async function loadPolicyFile(fileName: string): Promise<Policy> {
     const repoPath = path.join(process.cwd(), "policies", `${fileName}.yml`);
     const defaultPath = path.join(DEFAULT_POLICIES_DIR, `${fileName}.yml`);
 
     let content: string;
-
     try {
         content = await fs.readFile(repoPath, "utf-8");
         log.info(`Loaded policy override from repo: ${repoPath}`);
@@ -48,12 +47,12 @@ export async function loadPolicies(names: string[]): Promise<Policy> {
     return combined;
 }
 
-export function policyToEntities(policy: LabelPolicy) {
+export function policyToEntities(policy: LabelPolicy): LabelEntity[] {
     return Object.entries(policy.labels).map(([key, value]) =>
         createLabelEntity({
             key,
             color: value.color,
-            description: value.description
+            description: value.description,
         })
     );
 }

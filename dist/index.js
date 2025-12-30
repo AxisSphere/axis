@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /******/ (() => { // webpackBootstrap
 /******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ({
@@ -4091,89 +4092,353 @@ module.exports = new Type('tag:yaml.org,2002:timestamp', {
 
 /***/ }),
 
-/***/ 728:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ 65:
+/***/ ((__unused_webpack_module, exports) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.LabelsAdapter = void 0;
-const logger_1 = __nccwpck_require__(893);
-class LabelsAdapter {
-    octokit;
-    owner;
-    repo;
-    name = "labels";
-    constructor(octokit, owner, repo) {
-        this.octokit = octokit;
-        this.owner = owner;
-        this.repo = repo;
+exports.DiffPlanner = void 0;
+const EXECUTION_ORDER = {
+    create: 1,
+    update: 2,
+    delete: 3,
+    noop: 99
+};
+class DiffPlanner {
+    mode;
+    constructor(mode) {
+        this.mode = mode;
     }
-    supports(policy) {
-        return policy && policy.labels;
+    plan(diff) {
+        const steps = [];
+        let order = 0;
+        const executableOps = diff.operations
+            .filter(op => this.isExecutable(op))
+            .sort((a, b) => EXECUTION_ORDER[a.type] - EXECUTION_ORDER[b.type]);
+        for (const op of executableOps) {
+            steps.push({
+                order: ++order,
+                type: op.type,
+                key: op.key,
+                desired: op.desired,
+                actual: op.actual,
+                reason: op.reason,
+                safe: this.isSafe(op)
+            });
+        }
+        return {
+            mode: this.mode,
+            steps,
+            summary: {
+                executable: steps.length,
+                skipped: diff.operations.length - steps.length,
+                dangerous: steps.filter(s => !s.safe).length
+            }
+        };
     }
-    async apply(policy) {
-        const existing = await this.octokit.issues.listLabelsForRepo({
-            owner: this.owner,
-            repo: this.repo,
-            per_page: 100
-        });
-        const existingNames = existing.data.map(l => l.name);
-        // create/update
-        for (const [name, { color, description }] of Object.entries(policy.labels)) {
-            if (!existingNames.includes(name)) {
-                await this.octokit.issues.createLabel({ owner: this.owner, repo: this.repo, name, color, description });
-                logger_1.log.info(`Created label: ${name}`);
-            }
-            else {
-                await this.octokit.issues.updateLabel({ owner: this.owner, repo: this.repo, name, color, description });
-                logger_1.log.info(`Updated label: ${name}`);
-            }
+    isExecutable(op) {
+        if (op.type === 'noop')
+            return false;
+        if (this.mode === 'additive') {
+            return op.type === 'create';
         }
-        // delete labels not in policy
-        for (const label of existing.data) {
-            if (!policy.labels[label.name]) {
-                await this.octokit.issues.deleteLabel({ owner: this.owner, repo: this.repo, name: label.name });
-                logger_1.log.info(`Deleted label: ${label.name}`);
-            }
+        if (this.mode === 'reconcile') {
+            return op.type === 'create' || op.type === 'update';
         }
+        return this.mode === 'strict';
+    }
+    isSafe(op) {
+        if (op.type === 'delete')
+            return false;
+        return !(op.type === 'update' && this.mode === 'additive');
     }
 }
-exports.LabelsAdapter = LabelsAdapter;
+exports.DiffPlanner = DiffPlanner;
 
 
 /***/ }),
 
-/***/ 586:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ 157:
+/***/ ((__unused_webpack_module, exports) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.Engine = void 0;
-const logger_1 = __nccwpck_require__(893);
-class Engine {
-    adapters = [];
-    constructor() { }
-    registerAdapter(adapter) {
-        this.adapters.push(adapter);
+exports.PolicyDiffEngine = void 0;
+class PolicyDiffEngine {
+    mode;
+    constructor(mode) {
+        this.mode = mode;
     }
-    async run(policyNames, policyLoader) {
-        for (const policyName of policyNames) {
-            logger_1.log.info(`Applying policy: ${policyName}`);
-            const policy = policyLoader(policyName);
-            for (const adapter of this.adapters) {
-                if (adapter.supports(policy)) {
-                    await adapter.apply(policy);
+    diff(desired, actual) {
+        const desiredMap = new Map(desired.map(d => [d.key, d]));
+        const actualMap = new Map(actual.map(a => [a.key, a]));
+        const operations = [];
+        // 1. Desired → Actual
+        for (const [key, desiredEntity] of desiredMap) {
+            const actualEntity = actualMap.get(key);
+            if (!actualEntity) {
+                operations.push({
+                    type: 'create',
+                    key,
+                    desired: desiredEntity,
+                    reason: 'Entity missing in actual state'
+                });
+                continue;
+            }
+            if (desiredEntity.hash() !== actualEntity.hash()) {
+                if (this.mode === 'additive') {
+                    operations.push({
+                        type: 'noop',
+                        key,
+                        desired: desiredEntity,
+                        actual: actualEntity,
+                        reason: 'Additive mode ignores updates'
+                    });
+                }
+                else {
+                    operations.push({
+                        type: 'update',
+                        key,
+                        desired: desiredEntity,
+                        actual: actualEntity,
+                        reason: 'Entity differs from policy'
+                    });
+                }
+            }
+            else {
+                operations.push({
+                    type: 'noop',
+                    key,
+                    desired: desiredEntity,
+                    actual: actualEntity,
+                    reason: 'Entity matches policy'
+                });
+            }
+        }
+        // 2. Actual → Desired (orphans)
+        for (const [key, actualEntity] of actualMap) {
+            if (!desiredMap.has(key)) {
+                if (this.mode === 'strict') {
+                    operations.push({
+                        type: 'delete',
+                        key,
+                        actual: actualEntity,
+                        reason: 'Entity not declared in strict policy'
+                    });
+                }
+                else {
+                    operations.push({
+                        type: 'noop',
+                        key,
+                        actual: actualEntity,
+                        reason: 'Orphan entity preserved by policy mode'
+                    });
                 }
             }
         }
+        return this.buildResult(operations);
+    }
+    buildResult(ops) {
+        const summary = {
+            create: 0,
+            update: 0,
+            delete: 0,
+            noop: 0
+        };
+        for (const op of ops) {
+            summary[op.type]++;
+        }
+        return {
+            mode: this.mode,
+            operations: ops,
+            summary
+        };
     }
 }
-exports.Engine = Engine;
+exports.PolicyDiffEngine = PolicyDiffEngine;
 
 
 /***/ }),
 
-/***/ 35:
+/***/ 294:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PlanExecutor = void 0;
+const logger_1 = __nccwpck_require__(893);
+class PlanExecutor {
+    dryRun;
+    constructor(dryRun = false) {
+        this.dryRun = dryRun;
+    }
+    async execute(plan) {
+        logger_1.log.info(`Executing plan (${plan.steps.length} steps, mode=${plan.mode})`);
+        for (const step of plan.steps) {
+            await this.executeStep(step);
+        }
+        logger_1.log.info("Execution finished");
+    }
+    async executeStep(step) {
+        const { type, key, desired, actual, reason, safe } = step;
+        if (!safe && !this.dryRun) {
+            logger_1.log.warn(`[DANGEROUS] Skipping unsafe operation: ${type} ${key} (${reason})`);
+            return;
+        }
+        const actionMsg = `${type.toUpperCase()} ${key} ${this.dryRun ? '(dry-run)' : ''}`;
+        logger_1.log.info(`${actionMsg} - ${reason}`);
+        if (this.dryRun)
+            return;
+        switch (type) {
+            case "create":
+                await this.create(desired);
+                break;
+            case "update":
+                await this.update(desired, actual);
+                break;
+            case "delete":
+                await this.delete(key);
+                break;
+            case "noop":
+                break;
+            default:
+                throw new Error(`Unknown operation type: ${type}`);
+        }
+    }
+    // ---------------------------
+    // GitHub API or other executor
+    // ---------------------------
+    async create(entity) {
+        logger_1.log.info(`API CREATE -> ${entity.key}`);
+    }
+    async update(entity, actual) {
+        logger_1.log.info(`API UPDATE -> ${entity.key}`);
+    }
+    async delete(key) {
+        logger_1.log.info(`API DELETE -> ${key}`);
+    }
+}
+exports.PlanExecutor = PlanExecutor;
+
+
+/***/ }),
+
+/***/ 381:
+/***/ ((__unused_webpack_module, exports) => {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createLabelEntity = createLabelEntity;
+function createLabelEntity(data) {
+    return {
+        key: data.key,
+        name: data.name ?? data.key,
+        color: data.color,
+        description: data.description,
+        hash() {
+            return `${this.color}|${this.description ?? ""}`;
+        }
+    };
+}
+
+
+/***/ }),
+
+/***/ 874:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fetchCurrentLabels = fetchCurrentLabels;
+exports.createLabel = createLabel;
+exports.updateLabel = updateLabel;
+exports.deleteLabel = deleteLabel;
+const rest_1 = __nccwpck_require__(380);
+const logger_1 = __nccwpck_require__(893);
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+if (!GITHUB_TOKEN) {
+    throw new Error("GITHUB_TOKEN not set in environment");
+}
+const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
+async function fetchCurrentLabels(owner, repo) {
+    const repoOwner = owner ?? process.env.GITHUB_REPOSITORY?.split("/")[0];
+    const repoName = repo ?? process.env.GITHUB_REPOSITORY?.split("/")[1];
+    if (!repoOwner || !repoName) {
+        throw new Error("Cannot determine repository owner or name from environment");
+    }
+    const labels = [];
+    let page = 1;
+    const per_page = 100;
+    while (true) {
+        const response = await octokit.issues.listLabelsForRepo({
+            owner: repoOwner,
+            repo: repoName,
+            per_page,
+            page
+        });
+        for (const l of response.data) {
+            labels.push({
+                key: l.name,
+                name: l.name,
+                color: l.color,
+                description: l.description ?? undefined,
+                hash() {
+                    return `${this.color}|${this.description ?? ""}`;
+                }
+            });
+        }
+        if (response.data.length < per_page)
+            break;
+        page++;
+    }
+    logger_1.log.info(`Fetched ${labels.length} labels from ${repoOwner}/${repoName}`);
+    return labels;
+}
+async function createLabel(label, owner, repo) {
+    const [repoOwner, repoName] = getRepo(owner, repo);
+    await octokit.issues.createLabel({
+        owner: repoOwner,
+        repo: repoName,
+        name: label.name,
+        color: label.color,
+        description: label.description
+    });
+    logger_1.log.info(`Created label ${label.key}`);
+}
+async function updateLabel(label, owner, repo) {
+    const [repoOwner, repoName] = getRepo(owner, repo);
+    await octokit.issues.updateLabel({
+        owner: repoOwner,
+        repo: repoName,
+        name: label.key,
+        new_name: label.name,
+        color: label.color,
+        description: label.description
+    });
+    logger_1.log.info(`Updated label ${label.key}`);
+}
+async function deleteLabel(key, owner, repo) {
+    const [repoOwner, repoName] = getRepo(owner, repo);
+    await octokit.issues.deleteLabel({
+        owner: repoOwner,
+        repo: repoName,
+        name: key
+    });
+    logger_1.log.info(`Deleted label ${key}`);
+}
+function getRepo(owner, repo) {
+    const repoOwner = owner ?? process.env.GITHUB_REPOSITORY?.split("/")[0];
+    const repoName = repo ?? process.env.GITHUB_REPOSITORY?.split("/")[1];
+    if (!repoOwner || !repoName) {
+        throw new Error("Cannot determine repository owner or name from environment");
+    }
+    return [repoOwner, repoName];
+}
+
+
+/***/ }),
+
+/***/ 445:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 
@@ -4181,17 +4446,91 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.loadPolicy = loadPolicy;
-const fs_1 = __importDefault(__nccwpck_require__(896));
+exports.loadPolicies = loadPolicies;
+exports.policyToEntities = policyToEntities;
+const promises_1 = __importDefault(__nccwpck_require__(943));
 const path_1 = __importDefault(__nccwpck_require__(928));
 const js_yaml_1 = __importDefault(__nccwpck_require__(281));
-function loadPolicy(policyName) {
-    const policyPath = path_1.default.resolve(process.cwd(), "policies", `${policyName}.yml`);
-    if (!fs_1.default.existsSync(policyPath)) {
-        throw new Error(`Policy file not found: ${policyPath}`);
+const logger_1 = __nccwpck_require__(893);
+const labels_1 = __nccwpck_require__(381);
+const DEFAULT_POLICIES_DIR = path_1.default.resolve(__dirname, "../default-policies");
+async function loadPolicyFile(fileName) {
+    const repoPath = path_1.default.join(process.cwd(), "policies", `${fileName}.yml`);
+    const defaultPath = path_1.default.join(DEFAULT_POLICIES_DIR, `${fileName}.yml`);
+    let content;
+    try {
+        content = await promises_1.default.readFile(repoPath, "utf-8");
+        logger_1.log.info(`Loaded policy override from repo: ${repoPath}`);
     }
-    const raw = fs_1.default.readFileSync(policyPath, "utf8");
-    return js_yaml_1.default.load(raw);
+    catch {
+        try {
+            content = await promises_1.default.readFile(defaultPath, "utf-8");
+            logger_1.log.info(`Loaded default policy: ${defaultPath}`);
+        }
+        catch (err) {
+            logger_1.log.error(`Policy file not found: ${fileName} (repo or default)`);
+            throw err;
+        }
+    }
+    return js_yaml_1.default.load(content);
+}
+async function loadPolicies(names) {
+    const combined = {};
+    for (const name of names) {
+        const policy = await loadPolicyFile(name);
+        if (policy.labels) {
+            combined.labels = {
+                version: policy.labels.version,
+                labels: {
+                    ...(combined.labels?.labels ?? {}),
+                    ...policy.labels.labels,
+                },
+            };
+        }
+    }
+    return combined;
+}
+function policyToEntities(policy) {
+    return Object.entries(policy.labels).map(([key, value]) => (0, labels_1.createLabelEntity)({
+        key,
+        color: value.color,
+        description: value.description,
+    }));
+}
+
+
+/***/ }),
+
+/***/ 813:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runAxisEngine = runAxisEngine;
+const policy_loader_1 = __nccwpck_require__(445);
+const labels_client_1 = __nccwpck_require__(874);
+const PolicyDiffEngine_1 = __nccwpck_require__(157);
+const DiffPlanner_1 = __nccwpck_require__(65);
+const PlanExecutor_1 = __nccwpck_require__(294);
+const logger_1 = __nccwpck_require__(893);
+async function runAxisEngine(opts) {
+    logger_1.log.info(`Axis Engine starting (mode=${opts.mode})`);
+    const policy = await (0, policy_loader_1.loadPolicies)(opts.policies);
+    if (!policy.labels) {
+        logger_1.log.warn("No labels policy found");
+        return;
+    }
+    const desiredEntities = (0, policy_loader_1.policyToEntities)(policy.labels);
+    const currentRecord = await (0, labels_client_1.fetchCurrentLabels)();
+    const actualEntities = Object.values(currentRecord);
+    const diffEngine = new PolicyDiffEngine_1.PolicyDiffEngine(opts.mode);
+    const diff = diffEngine.diff(desiredEntities, actualEntities);
+    const planner = new DiffPlanner_1.DiffPlanner(opts.mode);
+    const plan = planner.plan(diff);
+    logger_1.log.info(`Execution plan: ${plan.steps.length} steps`);
+    const executor = new PlanExecutor_1.PlanExecutor(opts.dryRun ?? false);
+    await executor.execute(plan);
+    logger_1.log.info("Axis Engine finished");
 }
 
 
@@ -4264,10 +4603,10 @@ exports.log = new Logger();
 
 /***/ }),
 
-/***/ 896:
+/***/ 943:
 /***/ ((module) => {
 
-module.exports = require("fs");
+module.exports = require("fs/promises");
 
 /***/ }),
 
@@ -9218,32 +9557,10 @@ var __webpack_exports__ = {};
 var exports = __webpack_exports__;
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-const rest_1 = __nccwpck_require__(380);
-const engine_1 = __nccwpck_require__(586);
-const labels_adapter_1 = __nccwpck_require__(728);
-const loader_1 = __nccwpck_require__(35);
-const logger_1 = __nccwpck_require__(893);
-async function main() {
-    try {
-        const token = process.env.GITHUB_TOKEN;
-        if (!token)
-            throw new Error("GITHUB_TOKEN not set");
-        const repoFull = process.env.GITHUB_REPOSITORY;
-        if (!repoFull)
-            throw new Error("GITHUB_REPOSITORY not set");
-        const [owner, repo] = repoFull.split("/");
-        const octokit = new rest_1.Octokit({ auth: token });
-        const engine = new engine_1.Engine();
-        engine.registerAdapter(new labels_adapter_1.LabelsAdapter(octokit, owner, repo));
-        await engine.run(["labels"], loader_1.loadPolicy);
-        logger_1.log.info("All policies applied successfully");
-    }
-    catch (err) {
-        logger_1.log.error(err.message || String(err));
-        process.exit(1);
-    }
-}
-main();
+const runner_1 = __nccwpck_require__(813);
+const policies = process.env.POLICIES?.split(",") ?? ["labels"];
+const mode = process.env.POLICY_MODE ?? "additive";
+(0, runner_1.runAxisEngine)({ policies, mode, dryRun: false });
 
 })();
 
