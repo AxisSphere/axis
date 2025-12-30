@@ -1,0 +1,1 @@
+export type PolicyMode = 'additive' | 'reconcile' | 'strict';
