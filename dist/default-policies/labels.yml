@@ -1,0 +1,12 @@
+labels:
+  version: 1
+  labels:
+    objection/closed:
+      color: "b60205"
+      description: "Objection resolved; no known conflicts remain"
+    objection/open:
+      color: "ffab70"
+      description: "Unresolved objection to the proposal; blocks merge"
+    objection/deferred:
+      color: "ffd33d"
+      description: "Proposal is postponed for later review. No active objections, but not ready for merge."

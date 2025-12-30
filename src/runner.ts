@@ -5,7 +5,7 @@ import { DiffPlanner } from "./engine/diff/DiffPlanner";
 import { PlanExecutor } from "./engine/executor/PlanExecutor";
 import { PolicyMode } from "./engine/types/mode";
 import { log } from "./utils/logger";
-import {LabelEntity} from "./engine/types/labels";
+import { LabelEntity } from "./engine/types/labels";
 
 export async function runAxisEngine(opts: {
     policies: string[];
@@ -19,8 +19,8 @@ export async function runAxisEngine(opts: {
         log.warn("No labels policy found");
         return;
     }
-    const desiredEntities = policyToEntities(policy.labels);
 
+    const desiredEntities = policyToEntities(policy.labels);
     const currentRecord = await fetchCurrentLabels();
     const actualEntities = Object.values(currentRecord);
 
