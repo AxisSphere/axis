@@ -1,20 +1,28 @@
 import fs from "fs/promises";
 import path from "path";
 import yaml from "js-yaml";
-import { log } from "../utils/logger";
-import {Policy, LabelPolicy, LabelEntity, createLabelEntity} from "../engine/types/labels";
+import {log} from "../utils/logger";
+import {createLabelEntity, LabelPolicy, Policy} from "../engine/types/labels";
 
-/**
- * Load a single policy file (YAML)
- */
-async function loadPolicyFile(filePath: string): Promise<Policy> {
+const DEFAULT_POLICIES_DIR = path.resolve(__dirname, "../../default-policies");
+
+async function loadPolicyFile(fileName: string): Promise<Policy> {
+    const repoPath = path.join(process.cwd(), "policies", `${fileName}.yml`);
+    const defaultPath = path.join(DEFAULT_POLICIES_DIR, `${fileName}.yml`);
+
     try {
-        const content = await fs.readFile(filePath, "utf-8");
-        const parsed = yaml.load(content) as Policy;
-        log.info(`Loaded policy file: ${filePath}`);
-        return parsed;
+        let content: string;
+        try {
+            content = await fs.readFile(repoPath, "utf-8");
+            log.info(`Loaded policy override from repo: ${repoPath}`);
+        } catch {
+            content = await fs.readFile(defaultPath, "utf-8");
+            log.info(`Loaded default policy: ${defaultPath}`);
+        }
+
+        return yaml.load(content) as Policy;
     } catch (err) {
-        log.error(`Failed to load policy file: ${filePath} - ${(err as Error).message}`);
+        log.error(`Failed to load policy file ${fileName}: ${(err as Error).message}`);
         throw err;
     }
 }
@@ -23,15 +31,11 @@ async function loadPolicyFile(filePath: string): Promise<Policy> {
  * Load multiple policy files by name (without extension)
  * e.g. ['labels', 'branches']
  */
-export async function loadPolicies(names: string[]): Promise<Policy>
-{
-    const baseDir = path.resolve(process.cwd(), "policies");
+export async function loadPolicies(names: string[]): Promise<Policy> {
     const combined: Policy = {};
 
-    for (const name of names)
-    {
-        const filePath = path.join(baseDir, `${name}.yml`);
-        const policy = await loadPolicyFile(filePath);
+    for (const name of names) {
+        const policy = await loadPolicyFile(name);
 
         // Merge labels
         if (policy.labels) {

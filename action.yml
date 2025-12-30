@@ -5,6 +5,11 @@ inputs:
     description: Comma-separated list of policies to apply
     required: true
     default: labels
+  mode:
+    description: Policy mode (additive, reconcile, strict)
+    required: false
+    default: additive
+
 runs:
   using: "node20"
   main: "dist/index.js"

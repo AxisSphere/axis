@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runAxisEngine } from "./runAxisEngine";
+import { runAxisEngine } from "./runner";
 import { PolicyMode } from "./engine/types/mode";
 
 const policies = process.env.POLICIES?.split(",") ?? ["labels"];
