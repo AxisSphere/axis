@@ -1,0 +1,10 @@
+name: Axis Engine
+description: Apply Axis policies (labels, branches, PR rules)
+inputs:
+  policies:
+    description: Comma-separated list of policies to apply
+    required: true
+    default: labels
+runs:
+  using: "node20"
+  main: "dist/index.js"
