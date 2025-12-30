@@ -4,7 +4,8 @@ import yaml from "js-yaml";
 import { log } from "../utils/logger";
 import { Policy, LabelPolicy, createLabelEntity, LabelEntity } from "../engine/types/labels";
 
-const DEFAULT_POLICIES_DIR = path.resolve(__dirname, "../default-policies");
+const DEFAULT_POLICIES_DIR = path.join(__dirname, "default-policies");
+
 
 async function loadPolicyFile(fileName: string): Promise<Policy> {
     const repoPath = path.join(process.cwd(), "policies", `${fileName}.yml`);
@@ -23,6 +24,7 @@ async function loadPolicyFile(fileName: string): Promise<Policy> {
             throw err;
         }
     }
+
 
     return yaml.load(content) as Policy;
 }
