@@ -4,7 +4,7 @@ import yaml from "js-yaml";
 import { log } from "../utils/logger";
 import { Policy, LabelPolicy, createLabelEntity, LabelEntity } from "../engine/types/labels";
 
-const DEFAULT_POLICIES_DIR = path.join(__dirname, "dist/default-policies");
+const DEFAULT_POLICIES_DIR = path.join(process.env.GITHUB_ACTION_PATH || __dirname, "default-policies");
 
 
 async function loadPolicyFile(fileName: string): Promise<Policy> {
