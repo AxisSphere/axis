@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "tsc",
-    "build": "ncc build src/index.ts -o dist && cp -r src/default-policies dist/"
+    "build": "ncc build src/index.ts -o dist && npm run copy-policies",
+    "copy-policies": "mkdir -p dist/default-policies && cp src/default-policies/*.yml dist/default-policies/"
   },
   "keywords": [],
   "author": "",

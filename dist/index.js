@@ -4448,54 +4448,183 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.loadPolicies = loadPolicies;
 exports.policyToEntities = policyToEntities;
+exports.validatePolicyStructure = validatePolicyStructure;
+exports.debugPolicyPaths = debugPolicyPaths;
 const promises_1 = __importDefault(__nccwpck_require__(943));
 const path_1 = __importDefault(__nccwpck_require__(928));
 const js_yaml_1 = __importDefault(__nccwpck_require__(281));
 const logger_1 = __nccwpck_require__(893);
 const labels_1 = __nccwpck_require__(381);
-const DEFAULT_POLICIES_DIR = path_1.default.resolve(__dirname, "../default-policies");
-async function loadPolicyFile(fileName) {
-    const repoPath = path_1.default.join(process.cwd(), "policies", `${fileName}.yml`);
-    const defaultPath = path_1.default.join(DEFAULT_POLICIES_DIR, `${fileName}.yml`);
-    let content;
+async function fileExists(filePath) {
     try {
-        content = await promises_1.default.readFile(repoPath, "utf-8");
-        logger_1.log.info(`Loaded policy override from repo: ${repoPath}`);
+        await promises_1.default.access(filePath);
+        return true;
     }
     catch {
-        try {
-            content = await promises_1.default.readFile(defaultPath, "utf-8");
-            logger_1.log.info(`Loaded default policy: ${defaultPath}`);
-        }
-        catch (err) {
-            logger_1.log.error(`Policy file not found: ${fileName} (repo or default)`);
-            throw err;
+        return false;
+    }
+}
+function getPolicySearchPaths(fileName) {
+    const paths = [];
+    // 1. Repo override (najwyższy priorytet)
+    paths.push(path_1.default.join(process.cwd(), "policies", `${fileName}.yml`));
+    paths.push(path_1.default.join(process.cwd(), ".github", "policies", `${fileName}.yml`));
+    // 2. Default policies bundled z akcją
+    if (process.env.GITHUB_ACTION_PATH) {
+        // W środowisku GitHub Actions
+        paths.push(path_1.default.join(process.env.GITHUB_ACTION_PATH, "default-policies", `${fileName}.yml`));
+    }
+    // 3. Relative paths (development & różne bundlers)
+    // Jeśli używasz ncc, pliki będą w dist/default-policies
+    paths.push(path_1.default.join(__dirname, "..", "default-policies", `${fileName}.yml`));
+    paths.push(path_1.default.join(__dirname, "..", "..", "default-policies", `${fileName}.yml`));
+    paths.push(path_1.default.join(__dirname, "default-policies", `${fileName}.yml`));
+    // 4. Absolute fallback (jeśli wszystko inne zawiedzie)
+    const actionPath = process.env.GITHUB_ACTION_PATH;
+    if (actionPath) {
+        // Czasami GITHUB_ACTION_PATH wskazuje na src/, nie root
+        const parentPath = path_1.default.dirname(actionPath);
+        paths.push(path_1.default.join(parentPath, "default-policies", `${fileName}.yml`));
+    }
+    return paths;
+}
+async function loadPolicyFile(fileName) {
+    const searchPaths = getPolicySearchPaths(fileName);
+    logger_1.log.debug(`Searching for policy: ${fileName}`);
+    // Loguj wszystkie sprawdzane ścieżki (pomocne przy debugowaniu)
+    for (const searchPath of searchPaths) {
+        logger_1.log.debug(`  Checking: ${searchPath}`);
+    }
+    // Szukaj pierwszego istniejącego pliku
+    for (const filePath of searchPaths) {
+        if (await fileExists(filePath)) {
+            try {
+                const content = await promises_1.default.readFile(filePath, "utf-8");
+                const policy = js_yaml_1.default.load(content);
+                // Określ skąd załadowano
+                const source = filePath.includes(process.cwd()) ? "repo" : "default";
+                logger_1.log.info(`✓ Loaded ${source} policy: ${fileName} (${filePath})`);
+                return policy;
+            }
+            catch (err) {
+                logger_1.log.error(`Failed to parse policy file: ${filePath}`);
+                throw new Error(`Invalid YAML in ${filePath}: ${err}`);
+            }
         }
     }
-    return js_yaml_1.default.load(content);
+    // Żaden plik nie istnieje
+    logger_1.log.error(`✗ Policy file not found: ${fileName}.yml`);
+    logger_1.log.error(`Searched paths:`);
+    searchPaths.forEach(p => logger_1.log.error(`  - ${p}`));
+    throw new Error(`Policy "${fileName}.yml" not found.\n` +
+        `Create one of these files:\n` +
+        `  - ${process.cwd()}/policies/${fileName}.yml\n` +
+        `  - ${process.cwd()}/.github/policies/${fileName}.yml\n` +
+        `Or ensure default-policies/ is bundled with the action.`);
 }
 async function loadPolicies(names) {
     const combined = {};
+    logger_1.log.info(`Loading ${names.length} policy file(s): ${names.join(", ")}`);
     for (const name of names) {
-        const policy = await loadPolicyFile(name);
-        if (policy.labels) {
-            combined.labels = {
-                version: policy.labels.version,
-                labels: {
-                    ...(combined.labels?.labels ?? {}),
+        try {
+            const policy = await loadPolicyFile(name);
+            // Merge labels policy
+            if (policy.labels) {
+                if (!combined.labels) {
+                    combined.labels = {
+                        version: policy.labels.version || 1,
+                        labels: {},
+                    };
+                }
+                // Merge labels z zachowaniem kolejności
+                combined.labels.labels = {
+                    ...(combined.labels.labels ?? {}),
                     ...policy.labels.labels,
-                },
-            };
+                };
+                const labelCount = Object.keys(policy.labels.labels).length;
+                logger_1.log.info(`  ✓ Merged ${labelCount} label(s) from ${name}`);
+            }
+            // TODO: Inne typy polityk (branches, workflows, etc)
         }
+        catch (err) {
+            logger_1.log.error(`Failed to load policy: ${name}`);
+            throw err;
+        }
+    }
+    // Walidacja wyniku
+    if (!combined.labels || Object.keys(combined.labels.labels).length === 0) {
+        logger_1.log.warn("⚠ No labels loaded from any policy!");
+    }
+    else {
+        const totalLabels = Object.keys(combined.labels.labels).length;
+        logger_1.log.info(`✓ Total labels loaded: ${totalLabels}`);
     }
     return combined;
 }
 function policyToEntities(policy) {
-    return Object.entries(policy.labels).map(([key, value]) => (0, labels_1.createLabelEntity)({
-        key,
-        color: value.color,
-        description: value.description,
-    }));
+    if (!policy || !policy.labels) {
+        logger_1.log.warn("Empty policy provided to policyToEntities");
+        return [];
+    }
+    const entities = Object.entries(policy.labels).map(([key, value]) => {
+        // Walidacja wymaganych pól
+        if (!value.color) {
+            logger_1.log.warn(`Label "${key}" missing color, skipping`);
+            return null;
+        }
+        // Normalizacja koloru (usuń # jeśli jest)
+        const color = value.color.replace(/^#/, '');
+        // Walidacja formatu koloru
+        if (!/^[0-9a-fA-F]{6}$/.test(color)) {
+            logger_1.log.warn(`Label "${key}" has invalid color format: ${value.color} (expected 6-digit hex)`);
+            return null;
+        }
+        return (0, labels_1.createLabelEntity)({
+            key,
+            color,
+            description: value.description || "",
+        });
+    }).filter((entity) => entity !== null);
+    logger_1.log.debug(`Converted ${entities.length} policy entries to entities`);
+    return entities;
+}
+// Helper do walidacji struktury policy
+async function validatePolicyStructure(policy) {
+    let valid = true;
+    if (policy.labels) {
+        const { version, labels } = policy.labels;
+        if (!version || typeof version !== 'number') {
+            logger_1.log.error("Invalid labels.version - must be a number");
+            valid = false;
+        }
+        if (!labels || typeof labels !== 'object') {
+            logger_1.log.error("Invalid labels.labels - must be an object");
+            valid = false;
+        }
+        for (const [key, value] of Object.entries(labels)) {
+            if (!value.color) {
+                logger_1.log.error(`Label "${key}" missing required field: color`);
+                valid = false;
+            }
+            const color = value.color.replace(/^#/, '');
+            if (!/^[0-9a-fA-F]{6}$/.test(color)) {
+                logger_1.log.warn(`Label "${key}" has invalid color format: ${value.color}`);
+            }
+        }
+    }
+    return valid;
+}
+// Debug helper - wyświetl wszystkie sprawdzane ścieżki
+function debugPolicyPaths(fileName) {
+    const paths = getPolicySearchPaths(fileName);
+    console.log("\n=== POLICY DEBUG ===");
+    console.log(`Looking for: ${fileName}.yml`);
+    console.log(`__dirname: ${__dirname}`);
+    console.log(`process.cwd(): ${process.cwd()}`);
+    console.log(`GITHUB_ACTION_PATH: ${process.env.GITHUB_ACTION_PATH || 'undefined'}`);
+    console.log("\nSearch paths:");
+    paths.forEach((p, i) => console.log(`  ${i + 1}. ${p}`));
+    console.log("===================\n");
 }
 
 
