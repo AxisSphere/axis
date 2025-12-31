@@ -1,6 +1,8 @@
 import { ExecutionPlan, PlannedStep } from "../diff/DiffPlannerTypes";
 import { log } from "../../utils/logger";
 import {DiffableEntity} from "../diff/PolicyDiffEngine";
+import {createLabel, deleteLabel, updateLabel} from "../../github/labels-client";
+import {LabelEntity} from "../types/labels";
 
 export class PlanExecutor<T extends DiffableEntity> {
     constructor(
@@ -49,18 +51,22 @@ export class PlanExecutor<T extends DiffableEntity> {
         }
     }
 
-    // ---------------------------
-    // GitHub API or other executor
-    // ---------------------------
     private async create(entity: T) {
+        if ('color' in entity && 'description' in entity) {
+            await createLabel(entity as unknown as LabelEntity);
+        }
         log.info(`API CREATE -> ${entity.key}`);
     }
 
     private async update(entity: T, actual: T) {
+        if ('color' in entity && 'description' in entity) {
+            await updateLabel(entity as unknown as LabelEntity);
+        }
         log.info(`API UPDATE -> ${entity.key}`);
     }
 
     private async delete(key: string) {
+        await deleteLabel(key);
         log.info(`API DELETE -> ${key}`);
     }
 }
